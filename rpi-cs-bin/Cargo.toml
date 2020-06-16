@@ -1,0 +1,12 @@
+[package]
+name = "rpi-cs-bin"
+version = "0.1.0"
+authors = ["nukeop <nukeop@gumblert.tech>"]
+edition = "2018"
+
+[[bin]]
+name = "rpi-cs-bin"
+path = "src/main.rs"
+
+[dependencies]
+rpi_cs_core = { path = "../rpi-cs-core" }
