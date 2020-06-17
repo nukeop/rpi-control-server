@@ -1,5 +1,5 @@
 [package]
-name = "rpi-cs-bin"
+name = "rpi_cs_bin"
 version = "0.1.0"
 authors = ["nukeop <nukeop@gumblert.tech>"]
 edition = "2018"

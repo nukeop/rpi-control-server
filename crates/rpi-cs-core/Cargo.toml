@@ -1,7 +1,8 @@
 [package]
-name = "rpi-cs-core"
+name = "rpi_cs_core"
 version = "0.1.0"
 authors = ["nukeop <nukeop@gumblert.tech>"]
 edition = "2018"
 
 [dependencies]
+rppal = "0.11.3"

@@ -1,3 +1,8 @@
+extern crate rpi_cs_core;
+
+use rpi_cs_core::bme280::Bme280;
+
 fn main() {
-    println!("Hello, world!");
+    let mut bme280 = Bme280::new();
+    bme280.init();
 }
