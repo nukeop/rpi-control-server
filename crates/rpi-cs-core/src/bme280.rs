@@ -1,3 +1,5 @@
+// Parts of code copied and adapted from https://github.com/uber-foo/bme280-rs 
+
 use rppal::i2c::I2c;
 
 const I2C_ADDRESS: u16 = 0x76;
@@ -5,8 +7,20 @@ const I2C_ADDRESS: u16 = 0x76;
 const BME280_CHIP_ID: u8 = 0x60;
 const BME280_CHIP_ID_ADDR: u8 = 0xD0;
 
+const BME280_DATA_ADDR: u8 = 0xF7;
+const BME280_P_T_H_DATA_LEN: usize = 8;
+
 const BME280_RESET_ADDR: u8 = 0xE0;
 const BME280_SOFT_RESET_CMD: u8 = 0xB6;
+
+const BME280_PWR_CTRL_ADDR: u8 = 0xF4;
+const BME280_CTRL_HUM_ADDR: u8 = 0xF2;
+const BME280_CTRL_MEAS_ADDR: u8 = 0xF4;
+const BME280_SENSOR_MODE_MSK: u8 = 0x03;
+
+const BME280_SLEEP_MODE: u8 = 0x00;
+const BME280_FORCED_MODE: u8 = 0x01;
+const BME280_NORMAL_MODE: u8 = 0x03;
 
 const BME280_P_T_CALIB_DATA_ADDR: u8 = 0x88;
 const BME280_P_T_CALIB_DATA_LEN: usize = 26;
@@ -14,9 +28,24 @@ const BME280_P_T_CALIB_DATA_LEN: usize = 26;
 const BME280_H_CALIB_DATA_ADDR: u8 = 0xE1;
 const BME280_H_CALIB_DATA_LEN: usize = 7;
 
+const BME280_TEMP_MIN: f32 = -40.0;
+const BME280_TEMP_MAX: f32 = 85.0;
+
+const BME280_PRESSURE_MIN: f32 = 30000.0;
+const BME280_PRESSURE_MAX: f32 = 110000.0;
+
+const BME280_HUMIDITY_MIN: f32 = 0.0;
+const BME280_HUMIDITY_MAX: f32 = 100.0;
+
 macro_rules! concat_bytes {
   ($msb:expr, $lsb:expr) => {
     (($msb as u16) << 8) | ($lsb as u16)
+  };
+}
+
+macro_rules! set_bits {
+  ($reg_data:expr, $mask:expr, $pos:expr, $data:expr) => {
+    ($reg_data & !$mask) | (($data << $pos) & $mask)
   };
 }
 
@@ -55,6 +84,20 @@ pub struct CalibrationData {
   dig_h5: i16,
   dig_h6: i8,
   t_fine: i32,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum SensorMode {
+  Sleep,
+  Forced,
+  Normal,
+}
+
+#[derive(Debug)]
+pub struct Measurements {
+  pub temperature: f32,
+  pub pressure: f32,
+  pub humidity: f32,
 }
 
 pub struct Bme280 {
@@ -108,6 +151,116 @@ fn parse_calib_data(
   }
 }
 
+
+impl Measurements {
+  fn parse(
+      data: [u8; BME280_P_T_H_DATA_LEN],
+      calibration: &mut CalibrationData,
+  ) -> Result<Self, Error> {
+      let data_msb: u32 = (data[0] as u32) << 12;
+      let data_lsb: u32 = (data[1] as u32) << 4;
+      let data_xlsb: u32 = (data[2] as u32) >> 4;
+      let pressure = data_msb | data_lsb | data_xlsb;
+
+      let data_msb: u32 = (data[3] as u32) << 12;
+      let data_lsb: u32 = (data[4] as u32) << 4;
+      let data_xlsb: u32 = (data[5] as u32) >> 4;
+      let temperature = data_msb | data_lsb | data_xlsb;
+
+      let data_msb: u32 = (data[6] as u32) << 8;
+      let data_lsb: u32 = data[7] as u32;
+      let humidity = data_msb | data_lsb;
+
+      let temperature = Measurements::compensate_temperature(temperature, calibration)?;
+      let pressure = Measurements::compensate_pressure(pressure, calibration)?;
+      let humidity = Measurements::compensate_humidity(humidity, calibration)?;
+
+      Ok(Measurements {
+          temperature,
+          pressure,
+          humidity
+      })
+  }
+
+  fn compensate_temperature(
+    uncompensated: u32,
+    calibration: &mut CalibrationData,
+) -> Result<f32, Error> {
+    let var1: f32 = uncompensated as f32 / 16384.0 - calibration.dig_t1 as f32 / 1024.0;
+    let var1 = var1 * calibration.dig_t2 as f32;
+    let var2 = uncompensated as f32 / 131072.0 - calibration.dig_t1 as f32 / 8192.0;
+    let var2 = var2 * var2 * calibration.dig_t3 as f32;
+
+    calibration.t_fine = (var1 + var2) as i32;
+
+    let temperature = (var1 + var2) / 5120.0;
+    let temperature = if temperature < BME280_TEMP_MIN {
+        BME280_TEMP_MIN
+    } else if temperature > BME280_TEMP_MAX {
+        BME280_TEMP_MAX
+    } else {
+        temperature
+    };
+    Ok(temperature)
+}
+
+fn compensate_pressure(
+    uncompensated: u32,
+    calibration: &mut CalibrationData,
+) -> Result<f32, Error> {
+    let var1: f32 = calibration.t_fine as f32 / 2.0 - 64000.0;
+    let var2: f32 = var1 * var1 * calibration.dig_p6 as f32 / 32768.0;
+    let var2: f32 = var2 + var1 * calibration.dig_p5 as f32 * 2.0;
+    let var2: f32 = var2 / 4.0 + calibration.dig_p4 as f32 * 65536.0;
+    let var3: f32 = calibration.dig_p3 as f32 * var1 * var1 / 524288.0;
+    let var1: f32 = (var3 + calibration.dig_p2 as f32 * var1) / 524288.0;
+    let var1: f32 = (1.0 + var1 / 32768.0) * calibration.dig_p1 as f32;
+
+    let pressure = if var1 > 0.0 {
+        let pressure: f32 = 1048576.0 - uncompensated as f32;
+        let pressure: f32 = (pressure - (var2 / 4096.0)) * 6250.0 / var1;
+        let var1: f32 = calibration.dig_p9 as f32 * pressure * pressure / 2147483648.0;
+        let var2: f32 = pressure * calibration.dig_p8 as f32 / 32768.0;
+        let pressure: f32 = pressure + (var1 + var2 + calibration.dig_p7 as f32) / 16.0;
+        if pressure < BME280_PRESSURE_MIN {
+            BME280_PRESSURE_MIN
+        } else if pressure > BME280_PRESSURE_MAX {
+            BME280_PRESSURE_MAX
+        } else {
+            pressure
+        }
+    } else {
+        return Err(Error::InvalidData);
+    };
+    Ok(pressure)
+}
+
+fn compensate_humidity(
+    uncompensated: u32,
+    calibration: &mut CalibrationData,
+) -> Result<f32, Error> {
+    let var1: f32 = calibration.t_fine as f32 - 76800.0;
+    let var2: f32 =
+        calibration.dig_h4 as f32 * 64.0 + (calibration.dig_h5 as f32 / 16384.0) * var1;
+    let var3: f32 = uncompensated as f32 - var2;
+    let var4: f32 = calibration.dig_h2 as f32 / 65536.0;
+    let var5: f32 = 1.0 + (calibration.dig_h3 as f32 / 67108864.0) * var1;
+    let var6: f32 = 1.0 + (calibration.dig_h6 as f32 / 67108864.0) * var1 * var5;
+    let var6: f32 = var3 * var4 * (var5 * var6);
+
+    let humidity: f32 = var6 * (1.0 - calibration.dig_h1 as f32 * var6 / 524288.0);
+    let humidity = if humidity < BME280_HUMIDITY_MIN {
+        BME280_HUMIDITY_MIN
+    } else if humidity > BME280_HUMIDITY_MAX {
+        BME280_HUMIDITY_MAX
+    } else {
+        humidity
+    };
+    Ok(humidity)
+}
+
+}
+
 impl Bme280 {
   pub fn new() -> Bme280 {
     Bme280 {
@@ -118,7 +271,7 @@ impl Bme280 {
 
   pub fn init(&mut self) -> Result<(), Error> {
     self.verify_chip_id()?;
-    self.soft_reset().unwrap();
+    self.soft_reset()?;
     self.calibrate()?;
     self.setup();
 
@@ -126,7 +279,7 @@ impl Bme280 {
   }
 
   fn verify_chip_id(&mut self) -> Result<(), Error> {
-    let chip_id = self.read_register(BME280_CHIP_ID_ADDR)?;
+    let chip_id = self.read_reg(BME280_CHIP_ID_ADDR)?;
     if chip_id == BME280_CHIP_ID {
       Ok(())
     } else {
@@ -134,12 +287,15 @@ impl Bme280 {
     }
   }
 
-  fn soft_reset(&mut self) -> Result<(), rppal::i2c::Error> {
-    self.write_reg(BME280_RESET_ADDR, BME280_SOFT_RESET_CMD)?;
-    Ok(())
+  fn soft_reset(&mut self) -> Result<(), Error> {
+    let result = self.write_reg(BME280_RESET_ADDR, BME280_SOFT_RESET_CMD);
+    match result {
+      Ok(_) => Ok(()),
+      Err(_) => Err(Error::I2C),
+    }
   }
 
-  pub fn setup(&mut self) {
+  pub fn setup(&mut self) -> Result<(), Error> {
     self.i2c.set_slave_address(I2C_ADDRESS).unwrap();
 
     let osrs_t = 1; // Temperature oversampling x 1
@@ -154,16 +310,35 @@ impl Bme280 {
     let config_reg = (t_sb << 5) | (filter << 2) | spi3w_en;
     let ctrl_hum_reg = osrs_h;
 
-    self.write_reg(0xF2, ctrl_hum_reg).unwrap();
-    self.write_reg(0xF4, ctrl_meas_reg).unwrap();
-    self.write_reg(0xF5, config_reg).unwrap();
+    self.write_reg(0xF2, ctrl_hum_reg)?;
+    self.write_reg(0xF4, ctrl_meas_reg)?;
+    self.write_reg(0xF5, config_reg)?;
+
+    Ok(())
   }
 
-  fn read_register(&mut self, register: u8) -> Result<u8, Error> {
+  fn read_reg(&mut self, register: u8) -> Result<u8, Error> {
     let mut data: [u8; 1] = [0];
     let result = self.i2c.write_read(&[register], &mut data);
     match result {
       Ok(_) => Ok(data[0]),
+      Err(_) => Err(Error::I2C),
+    }
+  }
+
+  pub fn write_reg(&mut self, register: u8, data: u8) -> Result<(), Error> {
+    let result = self.i2c.smbus_write_byte(register, data);
+    match result {
+      Ok(_) => Ok(()),
+      Err(_) => Err(Error::I2C),
+    }
+  }
+
+  fn read_data(&mut self, register: u8) -> Result<[u8; BME280_P_T_H_DATA_LEN], Error> {
+    let mut data: [u8; BME280_P_T_H_DATA_LEN] = [0; BME280_P_T_H_DATA_LEN];
+    let result = self.i2c.write_read(&[register], &mut data);
+    match result {
+      Ok(_) => Ok(data),
       Err(_) => Err(Error::I2C),
     }
   }
@@ -196,7 +371,44 @@ impl Bme280 {
     Ok(())
   }
 
-  pub fn write_reg(&mut self, register: u8, data: u8) -> Result<(), rppal::i2c::Error> {
-    self.i2c.smbus_write_byte(register, data)
+  fn mode(&mut self) -> Result<SensorMode, Error> {
+    let mut data: [u8; 1] = [0];
+    self
+      .i2c
+      .write_read(&[BME280_PWR_CTRL_ADDR], &mut data)
+      .unwrap();
+
+    match data[0] & BME280_SENSOR_MODE_MSK {
+      BME280_SLEEP_MODE => Ok(SensorMode::Sleep),
+      BME280_FORCED_MODE => Ok(SensorMode::Forced),
+      BME280_NORMAL_MODE => Ok(SensorMode::Normal),
+      _ => Err(Error::InvalidData),
+    }
+  }
+
+  fn set_mode(&mut self, mode: u8) -> Result<(), Error> {
+    match self.mode()? {
+      SensorMode::Sleep => {}
+      _ => self.soft_reset()?,
+    };
+    let data = self.read_reg(BME280_PWR_CTRL_ADDR)?;
+    let data = set_bits!(data, BME280_SENSOR_MODE_MSK, 0, mode);
+    self.write_reg(BME280_PWR_CTRL_ADDR, data)
+  }
+
+  fn forced(&mut self) -> Result<(), Error> {
+    self.set_mode(BME280_FORCED_MODE)
+  }
+
+  pub fn measure(&mut self) -> Result<Measurements, Error> {
+    self.forced()?;
+    let measurements = self.read_data(BME280_DATA_ADDR)?;
+    match self.calib_data.as_mut() {
+      Some(calibration) => {
+        let measurements = Measurements::parse(measurements, &mut *calibration)?;
+        Ok(measurements)
+      }
+      None => Err(Error::NoCalibrationData),
+    }
   }
 }
