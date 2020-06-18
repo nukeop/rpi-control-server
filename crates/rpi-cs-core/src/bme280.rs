@@ -2,6 +2,12 @@ use rppal::i2c::I2c;
 
 const I2C_ADDRESS: u16 = 0x76;
 
+const BME280_CHIP_ID: u8 = 0x60;
+const BME280_CHIP_ID_ADDR: u8 = 0xD0;
+
+const BME280_RESET_ADDR: u8 = 0xE0;
+const BME280_SOFT_RESET_CMD: u8 = 0xB6;
+
 const BME280_P_T_CALIB_DATA_ADDR: u8 = 0x88;
 const BME280_P_T_CALIB_DATA_LEN: usize = 26;
 
@@ -110,6 +116,29 @@ impl Bme280 {
     }
   }
 
+  pub fn init(&mut self) -> Result<(), Error> {
+    self.verify_chip_id()?;
+    self.soft_reset().unwrap();
+    self.calibrate()?;
+    self.setup();
+
+    Ok(())
+  }
+
+  fn verify_chip_id(&mut self) -> Result<(), Error> {
+    let chip_id = self.read_register(BME280_CHIP_ID_ADDR)?;
+    if chip_id == BME280_CHIP_ID {
+      Ok(())
+    } else {
+      Err(Error::UnsupportedChip)
+    }
+  }
+
+  fn soft_reset(&mut self) -> Result<(), rppal::i2c::Error> {
+    self.write_reg(BME280_RESET_ADDR, BME280_SOFT_RESET_CMD)?;
+    Ok(())
+  }
+
   pub fn setup(&mut self) {
     self.i2c.set_slave_address(I2C_ADDRESS).unwrap();
 
@@ -128,6 +157,15 @@ impl Bme280 {
     self.write_reg(0xF2, ctrl_hum_reg).unwrap();
     self.write_reg(0xF4, ctrl_meas_reg).unwrap();
     self.write_reg(0xF5, config_reg).unwrap();
+  }
+
+  fn read_register(&mut self, register: u8) -> Result<u8, Error> {
+    let mut data: [u8; 1] = [0];
+    let result = self.i2c.write_read(&[register], &mut data);
+    match result {
+      Ok(_) => Ok(data[0]),
+      Err(_) => Err(Error::I2C),
+    }
   }
 
   pub fn read_pt_calib_data(
