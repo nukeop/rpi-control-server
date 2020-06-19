@@ -270,10 +270,10 @@ impl Bme280 {
   }
 
   pub fn init(&mut self) -> Result<(), Error> {
+    self.setup()?;
     self.verify_chip_id()?;
     self.soft_reset()?;
     self.calibrate()?;
-    self.setup();
 
     Ok(())
   }
