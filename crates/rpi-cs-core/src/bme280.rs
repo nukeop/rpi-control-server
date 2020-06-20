@@ -14,8 +14,6 @@ const BME280_RESET_ADDR: u8 = 0xE0;
 const BME280_SOFT_RESET_CMD: u8 = 0xB6;
 
 const BME280_PWR_CTRL_ADDR: u8 = 0xF4;
-const BME280_CTRL_HUM_ADDR: u8 = 0xF2;
-const BME280_CTRL_MEAS_ADDR: u8 = 0xF4;
 const BME280_SENSOR_MODE_MSK: u8 = 0x03;
 
 const BME280_SLEEP_MODE: u8 = 0x00;
@@ -23,7 +21,7 @@ const BME280_FORCED_MODE: u8 = 0x01;
 const BME280_NORMAL_MODE: u8 = 0x03;
 
 const BME280_P_T_CALIB_DATA_ADDR: u8 = 0x88;
-const BME280_P_T_CALIB_DATA_LEN: usize = 26;
+const BME280_P_T_CALIB_DATA_LEN: usize = 24;
 
 const BME280_H_CALIB_DATA_ADDR: u8 = 0xE1;
 const BME280_H_CALIB_DATA_LEN: usize = 7;
@@ -121,7 +119,8 @@ fn parse_calib_data(
   let dig_p7 = concat_bytes!(pt_data[19], pt_data[18]) as i16;
   let dig_p8 = concat_bytes!(pt_data[21], pt_data[20]) as i16;
   let dig_p9 = concat_bytes!(pt_data[23], pt_data[22]) as i16;
-  let dig_h1 = pt_data[25];
+  
+  let dig_h1 = pt_data[12];
   let dig_h2 = concat_bytes!(h_data[1], h_data[0]) as i16;
   let dig_h3 = h_data[2];
   let dig_h4 = (h_data[3] as i16 * 16) | ((h_data[4] as i16) & 0x0F);
@@ -272,7 +271,6 @@ impl Bme280 {
   pub fn init(&mut self) -> Result<(), Error> {
     self.setup()?;
     self.verify_chip_id()?;
-    self.soft_reset()?;
     self.calibrate()?;
 
     Ok(())
@@ -349,6 +347,7 @@ impl Bme280 {
   ) -> Result<[u8; BME280_P_T_CALIB_DATA_LEN], Error> {
     let mut data: [u8; BME280_P_T_CALIB_DATA_LEN] = [0; BME280_P_T_CALIB_DATA_LEN];
     let result = self.i2c.write_read(&[register], &mut data);
+
     match result {
       Ok(_) => Ok(data),
       Err(_) => Err(Error::I2C),
