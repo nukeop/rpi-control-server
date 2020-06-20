@@ -10,16 +10,6 @@ const BME280_CHIP_ID_ADDR: u8 = 0xD0;
 const BME280_DATA_ADDR: u8 = 0xF7;
 const BME280_P_T_H_DATA_LEN: usize = 8;
 
-const BME280_RESET_ADDR: u8 = 0xE0;
-const BME280_SOFT_RESET_CMD: u8 = 0xB6;
-
-const BME280_PWR_CTRL_ADDR: u8 = 0xF4;
-const BME280_SENSOR_MODE_MSK: u8 = 0x03;
-
-const BME280_SLEEP_MODE: u8 = 0x00;
-const BME280_FORCED_MODE: u8 = 0x01;
-const BME280_NORMAL_MODE: u8 = 0x03;
-
 const BME280_P_T_CALIB_DATA_ADDR: u8 = 0x88;
 const BME280_P_T_CALIB_DATA_LEN: usize = 24;
 
@@ -38,12 +28,6 @@ const BME280_HUMIDITY_MAX: f32 = 100.0;
 macro_rules! concat_bytes {
   ($msb:expr, $lsb:expr) => {
     (($msb as u16) << 8) | ($lsb as u16)
-  };
-}
-
-macro_rules! set_bits {
-  ($reg_data:expr, $mask:expr, $pos:expr, $data:expr) => {
-    ($reg_data & !$mask) | (($data << $pos) & $mask)
   };
 }
 
@@ -217,8 +201,14 @@ fn compensate_pressure(
 
     let pressure = if var1 > 0.0 {
         let pressure: f32 = 1048576.0 - uncompensated as f32;
-        let pressure: f32 = (pressure - (var2 / 4096.0)) * 6250.0 / var1;
-        let var1: f32 = calibration.dig_p9 as f32 * pressure * pressure / 2147483648.0;
+        let mut pressure: f32 = (pressure - (var2 / 4096.0)) * 3125.0;
+        if pressure < 2147483648.0 {
+          pressure = (pressure * 2.0) / var1;
+        } else {
+          pressure = (pressure / var1) * 2.0;
+        }
+
+        let var1: f32 = (calibration.dig_p9 as f32 * (((pressure/8.0) * (pressure/8.0)) / 8192.0)) / 4096.0;
         let var2: f32 = pressure * calibration.dig_p8 as f32 / 32768.0;
         let pressure: f32 = pressure + (var1 + var2 + calibration.dig_p7 as f32) / 16.0;
         if pressure < BME280_PRESSURE_MIN {
@@ -231,7 +221,7 @@ fn compensate_pressure(
     } else {
         return Err(Error::InvalidData);
     };
-    Ok(pressure)
+    Ok(pressure/100.0)
 }
 
 fn compensate_humidity(
@@ -282,14 +272,6 @@ impl Bme280 {
       Ok(())
     } else {
       Err(Error::UnsupportedChip)
-    }
-  }
-
-  fn soft_reset(&mut self) -> Result<(), Error> {
-    let result = self.write_reg(BME280_RESET_ADDR, BME280_SOFT_RESET_CMD);
-    match result {
-      Ok(_) => Ok(()),
-      Err(_) => Err(Error::I2C),
     }
   }
 
@@ -370,37 +352,7 @@ impl Bme280 {
     Ok(())
   }
 
-  fn mode(&mut self) -> Result<SensorMode, Error> {
-    let mut data: [u8; 1] = [0];
-    self
-      .i2c
-      .write_read(&[BME280_PWR_CTRL_ADDR], &mut data)
-      .unwrap();
-
-    match data[0] & BME280_SENSOR_MODE_MSK {
-      BME280_SLEEP_MODE => Ok(SensorMode::Sleep),
-      BME280_FORCED_MODE => Ok(SensorMode::Forced),
-      BME280_NORMAL_MODE => Ok(SensorMode::Normal),
-      _ => Err(Error::InvalidData),
-    }
-  }
-
-  fn set_mode(&mut self, mode: u8) -> Result<(), Error> {
-    match self.mode()? {
-      SensorMode::Sleep => {}
-      _ => self.soft_reset()?,
-    };
-    let data = self.read_reg(BME280_PWR_CTRL_ADDR)?;
-    let data = set_bits!(data, BME280_SENSOR_MODE_MSK, 0, mode);
-    self.write_reg(BME280_PWR_CTRL_ADDR, data)
-  }
-
-  fn forced(&mut self) -> Result<(), Error> {
-    self.set_mode(BME280_FORCED_MODE)
-  }
-
   pub fn measure(&mut self) -> Result<Measurements, Error> {
-    self.forced()?;
     let measurements = self.read_data(BME280_DATA_ADDR)?;
     match self.calib_data.as_mut() {
       Some(calibration) => {
