@@ -75,7 +75,7 @@ pub enum SensorMode {
   Normal,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Measurements {
   pub temperature: f32,
   pub pressure: f32,

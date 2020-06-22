@@ -10,3 +10,4 @@ path = "src/main.rs"
 
 [dependencies]
 rpi_cs_core = { path = "../rpi-cs-core" }
+dotenv = "0.15.0"
